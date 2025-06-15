@@ -686,11 +686,22 @@ def load_dicom(series_folder_path):
 
     loaded_dicom.sort(key=lambda s: s.ImagePositionPatient[2])
 
+    if hasattr(loaded_dicom[0], 'RescaleSlope'):
+        slope = loaded_dicom[0].RescaleSlope
+    else:
+        slope = 1
+
+    if hasattr(loaded_dicom[0], 'RescaleIntercept'):
+        intercept = loaded_dicom[0].RescaleIntercept
+    else:
+        intercept = -1024
+
     pixel_arrays = [s.pixel_array for s in loaded_dicom]
 
-    scalar_field = np.stack(pixel_arrays)
+    scalar_field_raw = np.stack(pixel_arrays)
+    scalar_field_hu = scalar_field_raw.astype(np.float32) * slope + intercept
 
-    return scalar_field, np.array([loaded_dicom[0].PixelSpacing[0], loaded_dicom[0].PixelSpacing[1], loaded_dicom[0].SliceThickness])
+    return scalar_field_hu, np.array([loaded_dicom[0].PixelSpacing[0], loaded_dicom[0].PixelSpacing[1], loaded_dicom[0].SliceThickness])
     # return loaded_dicom
 
 
@@ -707,10 +718,14 @@ def main():
 
     scalar_field, grid_step = load_dicom("./data/abdomen/*")
 
+    print(np.min(scalar_field), np.max(scalar_field))
+
     nx, ny, nz = scalar_field.shape
 
     mesh_pieces = []
     chunk_size = 32
+
+    print(500)
 
     for i in range(0, nx-1, chunk_size):
         print(f"Processing chunks {i} to {i+chunk_size}...")
@@ -720,7 +735,7 @@ def main():
         chunk = scalar_field[i: i+chunk_size+1, :, :]
 
         verticies, faces = marching_cubes(
-            chunk, 500, cached_verticies, i)
+            chunk, 300, cached_verticies, i)
 
         # print(verticies)
 
