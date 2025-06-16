@@ -483,8 +483,6 @@ point_picked = np.array(
 case_index = 0
 triangle_actors = {}
 
-plotter = pv.Plotter()
-
 current_tri_actors = []
 
 int_tuple3d = types.UniTuple(types.int64, 3)
@@ -492,48 +490,48 @@ key_type = types.Tuple((int_tuple3d, int_tuple3d))
 value_type = types.int64
 
 
-def point_picked_callback(point, picker):
-    global current_tri_actor
+# def point_picked_callback(point, picker):
+#     global current_tri_actor
 
-    picked_index = picker.point_id
+#     picked_index = picker.point_id
 
-    print("Index: ", picked_index)
+#     print("Index: ", picked_index)
 
-    if current_tri_actors:
-        for actor in current_tri_actors:
-            plotter.remove_actor(actor)
+#     if current_tri_actors:
+#         for actor in current_tri_actors:
+#             plotter.remove_actor(actor)
 
-        current_tri_actor = []
+#         current_tri_actor = []
 
-    if picked_index in sphere_actors:
-        plotter.remove_actor(sphere_actors[picked_index])
-        point_picked[picked_index] = False
+#     if picked_index in sphere_actors:
+#         plotter.remove_actor(sphere_actors[picked_index])
+#         point_picked[picked_index] = False
 
-        del sphere_actors[picked_index]
-    else:
-        sphere = pv.Sphere(center=point, radius=0.01)
-        actor = plotter.add_mesh(sphere, color="red", pickable=False)
-        sphere_actors[picked_index] = actor
-        point_picked[picked_index] = True
+#         del sphere_actors[picked_index]
+#     else:
+#         sphere = pv.Sphere(center=point, radius=0.01)
+#         actor = plotter.add_mesh(sphere, color="red", pickable=False)
+#         sphere_actors[picked_index] = actor
+#         point_picked[picked_index] = True
 
-    current_index = sum(
-        [int(picked) << i for i, picked in enumerate(point_picked)])
+#     current_index = sum(
+#         [int(picked) << i for i, picked in enumerate(point_picked)])
 
-    print("Picked index: ", current_index)
+#     print("Picked index: ", current_index)
 
-    for i in range(0, len(triangle_table[current_index]), 3):
-        edge_list = triangle_table[current_index]
+#     for i in range(0, len(triangle_table[current_index]), 3):
+#         edge_list = triangle_table[current_index]
 
-        e1, e2, e3 = edge_list[i], edge_list[i+1], edge_list[i+2]
-        verticies = np.array(
-            [edge_midpoint[e1], edge_midpoint[e2], edge_midpoint[e3]])
-        faces = np.array([3, 0, 1, 2])
+#         e1, e2, e3 = edge_list[i], edge_list[i+1], edge_list[i+2]
+#         verticies = np.array(
+#             [edge_midpoint[e1], edge_midpoint[e2], edge_midpoint[e3]])
+#         faces = np.array([3, 0, 1, 2])
 
-        print(e1, e2, e3)
+#         print(e1, e2, e3)
 
-        tri_mesh = pv.PolyData(verticies, faces)
-        actor = plotter.add_mesh(tri_mesh, pickable=False)
-        current_tri_actors.append(actor)
+#         tri_mesh = pv.PolyData(verticies, faces)
+#         actor = plotter.add_mesh(tri_mesh, pickable=False)
+#         current_tri_actors.append(actor)
 
 
 # dims = (64, 64, 64)
@@ -738,7 +736,7 @@ def main():
         chunk = scalar_field[i: i+chunk_size+1, :, :]
 
         verticies, faces = marching_cubes(
-            chunk, -100, cached_verticies, i, vertex_offset)
+            chunk, 325, cached_verticies, i, vertex_offset)
 
         if verticies.shape[0] > 0 and faces.shape[0] > 0:
             all_verticies.append(verticies)
@@ -754,8 +752,12 @@ def main():
     final_verticies *= grid_step
 
     mesh = pv.PolyData(final_verticies, final_faces.reshape(-1))
+    mesh = mesh.clean()
+    mesh = mesh.smooth(n_iter=50)
 
-    plotter.add_mesh(mesh)
+    plotter = pv.Plotter()
+
+    plotter.add_mesh(mesh, smooth_shading=True)
 
     end_time = time.perf_counter()
 
@@ -763,18 +765,9 @@ def main():
 
     print(f"Marching cubes completed in {duration:.4f} seconds")
 
-    print("NaNs in vertices:", np.isnan(final_verticies).any())
-    print("Negative indices in faces:", (final_faces[:, 1:] < 0).any())
-    print("Out-of-bounds indices:",
-          (final_faces[:, 1:] >= final_verticies.shape[0]).any())
-
-    # np.savetxt('vertices.txt', final_verticies, fmt='%.6f')
-
-    # Save the faces, which are integers
-    # np.savetxt('faces.txt', final_faces, fmt='%d')
-
-    # plotter.add_axes()
-    plotter.show(screenshot='output.png')
+    plotter.add_axes()
+    plotter.show()
+    plotter.close()
 
 
 if __name__ == "__main__":
