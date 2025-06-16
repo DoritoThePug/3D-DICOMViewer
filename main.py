@@ -8,6 +8,7 @@ import pydicom as pdcm
 import numba
 from numba.core import types
 from numba.typed import Dict
+import pickle
 
 edge_masks = np.array([
     0x0, 0x109, 0x203, 0x30a, 0x406, 0x50f, 0x605, 0x70c,
@@ -549,7 +550,7 @@ def point_picked_callback(point, picker):
 
 # scalar_field = (x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2
 
-@numba.jit(nopython=True, cache=True)
+@numba.jit(nopython=True, cache=False)
 def linear_interpolate(p1, p2, val1, val2, isovalue):
     if (p2[0] < p1[0] or p2[1] < p1[1] or p2[2] < p1[2]):
         p1, p2 = p2, p1
@@ -565,8 +566,8 @@ def linear_interpolate(p1, p2, val1, val2, isovalue):
         return p1
 
 
-@numba.jit(nopython=True, cache=True)
-def marching_cubes(scalar_field, iso_value, cached_verticies, chunk_i_offset):
+@numba.jit(nopython=True, cache=False)
+def marching_cubes(scalar_field, iso_value, cached_verticies, chunk_i_offset, vertex_offset):
     nx, ny, nz = scalar_field.shape
 
     max_triangles = (nx - 1) * (ny - 1) * (nz - 1) * \
@@ -580,12 +581,8 @@ def marching_cubes(scalar_field, iso_value, cached_verticies, chunk_i_offset):
     faces_count = 0
 
     for ix in range(nx - 1):
-        # print(ix)
-
         for jy in range(ny - 1):
             for kz in range(nz - 1):
-                # print(i, j, k)
-
                 vertex_values = [
                     scalar_field[ix, jy, kz],
                     scalar_field[ix+1, jy, kz],
@@ -596,12 +593,6 @@ def marching_cubes(scalar_field, iso_value, cached_verticies, chunk_i_offset):
                     scalar_field[ix+1, jy+1, kz+1],
                     scalar_field[ix, jy+1, kz+1],
                 ]
-
-                # cube_origin_x = -1.0 + ix * grid_step[0]
-                # cube_origin_y = -1.0 + jy * grid_step[1]
-                # cube_origin_z = -1.0 + kz * grid_step[2]
-                # cube_origin = chunk_origin + np.array(
-                #     [cube_origin_x, cube_origin_y, cube_origin_z])
 
                 index = 0
 
@@ -650,7 +641,7 @@ def marching_cubes(scalar_field, iso_value, cached_verticies, chunk_i_offset):
 
                                 verticies[vertex_count] = intersection_point
 
-                                vertex_idx = vertex_count
+                                vertex_idx = vertex_count + vertex_offset
 
                                 vertex_count += 1
 
@@ -659,13 +650,14 @@ def marching_cubes(scalar_field, iso_value, cached_verticies, chunk_i_offset):
                             current_cube_vertex_indices[edge_i] = vertex_idx
 
                     for l in range(0, 15, 3):
-                        if l == -1:
-                            break
 
                         edge_list = triangle_table[index]
 
                         e1, e2, e3 = edge_list[l], edge_list[l +
                                                              1], edge_list[l+2]
+
+                        if e1 == -1 or e2 == -1 or e3 == -1:
+                            break
 
                         faces[faces_count, 0] = 3
 
@@ -701,55 +693,69 @@ def load_dicom(series_folder_path):
     scalar_field_raw = np.stack(pixel_arrays)
     scalar_field_hu = scalar_field_raw.astype(np.float32) * slope + intercept
 
-    return scalar_field_hu, np.array([loaded_dicom[0].PixelSpacing[0], loaded_dicom[0].PixelSpacing[1], loaded_dicom[0].SliceThickness])
+    slice_thickness = None
+
+    if hasattr(loaded_dicom[0], 'SliceThickness'):
+        slice_thickness = loaded_dicom[0].SliceThickness
+
+    if slice_thickness is None or slice_thickness == 0:
+        if hasattr(loaded_dicom[0], 'SpacingBetweenSlices'):
+            slice_thickness = loaded_dicom[0].SpacingBetweenSlices
+
+    if slice_thickness is None or slice_thickness == 0:
+        pos1 = np.array(loaded_dicom[0].ImagePositionPatient)
+        pos2 = np.array(loaded_dicom[1].ImagePositionPatient)
+
+        slice_thickness = np.abs(pos2[2] - pos1[2])
+
+    return scalar_field_hu, np.array([loaded_dicom[0].PixelSpacing[0], loaded_dicom[0].PixelSpacing[1], slice_thickness.astype(np.float64)])
     # return loaded_dicom
 
 
 def main():
-    # cube_mesh = pv.PolyData(cube_verticies, cube_faces)
-    # plotter.add_mesh(cube_mesh, style="wireframe", color="blue", pickable=True)
-
-    # plotter.enable_point_picking(
-    # callback=point_picked_callback, use_picker=True, show_point=False, pickable_window=False)
-
     print("Starting marching cubes... ")
 
     start_time = time.perf_counter()
 
-    scalar_field, grid_step = load_dicom("./data/abdomen/*")
-
-    print(np.min(scalar_field), np.max(scalar_field))
+    scalar_field, grid_step = load_dicom(
+        "./data/pancreas/manifest-1750014098054/Pancreas-CT/PANCREAS_0001/11-24-2015-PANCREAS0001-Pancreas-18957/Pancreas-99667/*")
 
     nx, ny, nz = scalar_field.shape
 
     mesh_pieces = []
     chunk_size = 32
 
-    print(500)
+    all_verticies = []
+    all_faces = []
+
+    vertex_offset = 0
+
+    cached_verticies = Dict.empty(key_type=key_type, value_type=value_type)
 
     for i in range(0, nx-1, chunk_size):
         print(f"Processing chunks {i} to {i+chunk_size}...")
 
-        cached_verticies = Dict.empty(key_type=key_type, value_type=value_type)
-
         chunk = scalar_field[i: i+chunk_size+1, :, :]
 
         verticies, faces = marching_cubes(
-            chunk, 300, cached_verticies, i)
+            chunk, -100, cached_verticies, i, vertex_offset)
 
-        # print(verticies)
+        if verticies.shape[0] > 0 and faces.shape[0] > 0:
+            all_verticies.append(verticies)
 
-        if len(verticies) > 0:
-            real_verts = verticies * grid_step
+            # faces[:, 1:] += vertex_offset
+            all_faces.append(faces)
 
-            mesh_pieces.append(pv.PolyData(real_verts, faces))
+            vertex_offset += verticies.shape[0]
 
-    print(len(mesh_pieces))
+    final_verticies = np.vstack(all_verticies)
+    final_faces = np.vstack(all_faces)
 
-    # tri_mesh = pv.merge(mesh_pieces)
+    final_verticies *= grid_step
 
-    for mesh in mesh_pieces:
-        plotter.add_mesh(mesh, pickable=False)
+    mesh = pv.PolyData(final_verticies, final_faces.reshape(-1))
+
+    plotter.add_mesh(mesh)
 
     end_time = time.perf_counter()
 
@@ -757,8 +763,18 @@ def main():
 
     print(f"Marching cubes completed in {duration:.4f} seconds")
 
-    plotter.add_axes()
-    plotter.show()
+    print("NaNs in vertices:", np.isnan(final_verticies).any())
+    print("Negative indices in faces:", (final_faces[:, 1:] < 0).any())
+    print("Out-of-bounds indices:",
+          (final_faces[:, 1:] >= final_verticies.shape[0]).any())
+
+    # np.savetxt('vertices.txt', final_verticies, fmt='%.6f')
+
+    # Save the faces, which are integers
+    # np.savetxt('faces.txt', final_faces, fmt='%d')
+
+    # plotter.add_axes()
+    plotter.show(screenshot='output.png')
 
 
 if __name__ == "__main__":
